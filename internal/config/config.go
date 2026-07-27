@@ -25,7 +25,7 @@ func Load() (*Config, error) {
         HTTPReadTimeout:  5 * time.Second,
         HTTPWriteTimeout: 10 * time.Second,
     }
-	// Optional overrides for timeouts, given in whole seconds.
+	// timeout overriding 
 	if v := os.Getenv("HTTP_READ_TIMEOUT_SEC"); v != "" {
 		secs, err := strconv.Atoi(v)
 		if err != nil {
