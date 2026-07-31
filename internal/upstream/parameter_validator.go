@@ -3,6 +3,7 @@ package upstream
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 )
 
 func ResolveParameters(params map[string]ParameterDef, values map[string]string) (map[string]string, error) {
@@ -34,20 +35,47 @@ func ResolveParameters(params map[string]ParameterDef, values map[string]string)
 }
 
 func validateValue(name string, def ParameterDef, val string) error {
-	if def.MaximumLength > 0 && len(val) > def.MaximumLength {
-		return fmt.Errorf("%w: %s exceeds maximum length %d", ErrInvalidParameter, name, def.MaximumLength)
+	if err := validateType(name, def.Type, val); err != nil {
+		return err
 	}
-	if def.Pattern != "" {
-		re, err := regexp.Compile(def.Pattern)
-		if err != nil {
-			return fmt.Errorf("%w: %s has an invalid pattern: %v", ErrInvalidParameter, name, err)
+	if v := def.Validation; v != nil {
+		if v.MaximumLength > 0 && len(val) > v.MaximumLength {
+			return fmt.Errorf("%w: %s exceeds maximum length %d", ErrInvalidParameter, name, v.MaximumLength)
 		}
-		if !re.MatchString(val) {
-			return fmt.Errorf("%w: %s does not match required pattern", ErrInvalidParameter, name)
+		if v.Pattern != "" {
+			re, err := regexp.Compile(v.Pattern)
+			if err != nil {
+				return fmt.Errorf("%w: %s has an invalid pattern: %v", ErrInvalidParameter, name, err)
+			}
+			if !re.MatchString(val) {
+				return fmt.Errorf("%w: %s does not match required pattern", ErrInvalidParameter, name)
+			}
 		}
 	}
 	if len(def.AllowedValues) > 0 && !contains(def.AllowedValues, val) {
 		return fmt.Errorf("%w: %s is not one of the allowed values", ErrInvalidParameter, name)
+	}
+	return nil
+}
+
+func validateType(name, typ, val string) error {
+	switch typ {
+	case "", "string":
+		return nil
+	case "integer":
+		if _, err := strconv.ParseInt(val, 10, 64); err != nil {
+			return fmt.Errorf("%w: %s must be an integer", ErrInvalidParameter, name)
+		}
+	case "number":
+		if _, err := strconv.ParseFloat(val, 64); err != nil {
+			return fmt.Errorf("%w: %s must be a number", ErrInvalidParameter, name)
+		}
+	case "boolean":
+		if _, err := strconv.ParseBool(val); err != nil {
+			return fmt.Errorf("%w: %s must be a boolean", ErrInvalidParameter, name)
+		}
+	default:
+		return fmt.Errorf("%w: %s has unknown type %q", ErrInvalidParameter, name, typ)
 	}
 	return nil
 }
