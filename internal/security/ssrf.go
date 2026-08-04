@@ -37,11 +37,16 @@ var blockedIPv4Ranges = []string{
 	"255.255.255.255/32", // broadcast
 }
 
+// IPv4-mapped IPv6 (::ffff:127.0.0.1) is deliberately NOT listed here.
+// IsBlockedIP normalizes such addresses with To4() before matching, so
+// they are judged against the IPv4 ranges above — ::ffff:127.0.0.1 is
+// caught by 127.0.0.0/8. Adding ::ffff:0:0/96 to this list looks
+// correct but is not: ParseCIDR reduces it to a 4-byte 0.0.0.0 whose
+// mask truncates to all zeros, which then matches every IPv4 address
+// on earth and blocks the entire internet.
 var blockedIPv6Ranges = []string{
 	"::/128",        // unspecified
 	"::1/128",       // loopback
-	"::ffff:0:0/96", // IPv4-mapped — ::ffff:127.0.0.1 is loopback wearing
-	// an IPv6 costume
 	"fc00::/7",      // unique local
 	"fe80::/10",     // link-local
 	"ff00::/8",      // multicast
