@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"content-pipeline-insider/internal/fetcher"
+	"content-pipeline-insider/internal/responseparser"
+	"content-pipeline-insider/internal/schemainfer"
 	"content-pipeline-insider/internal/secrets"
 	"content-pipeline-insider/internal/upstream"
 )
@@ -84,5 +86,34 @@ func main() {
 		fmt.Println("\nnot usable:", err)
 		os.Exit(1)
 	}
-	fmt.Println("\nOK — usable JSON, ready for Phase 6 parsing.")
+
+	parsed, err := responseparser.Decode(resp.Body)
+	if err != nil {
+		fmt.Println("\nparse failed:", err)
+		os.Exit(1)
+	}
+
+	// One sample today. Infer takes a slice because several responses
+	// describe the shape far better than one — see its doc comment.
+	tree, err := schemainfer.Infer([]any{parsed})
+	if err != nil {
+		fmt.Println("\ninfer failed:", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("\nFIELD TREE  (• = selectable)")
+	fmt.Print(tree.String())
+
+	fmt.Println("\nSELECTABLE FIELDS — these are what an admin picks from:")
+	for _, f := range schemainfer.Flatten(tree) {
+		fmt.Printf("  %-34s %-8s  e.g. %v\n", f.JMESPath, f.Type, truncate(f.SampleValue))
+	}
+}
+
+func truncate(v any) string {
+	s := fmt.Sprint(v)
+	if len(s) > 50 {
+		return s[:50] + "…"
+	}
+	return s
 }
