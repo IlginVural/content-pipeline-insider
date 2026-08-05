@@ -25,10 +25,10 @@ var DefaultResolver Resolver = net.DefaultResolver
 // evil.com resolves to both a public address and 127.0.0.1, accepting
 // it because one address looked fine would mean the connection might
 // still land on loopback. One bad address poisons the name.
-func ValidateHost(ctx context.Context, resolver Resolver, host string) ([]net.IPAddr, error) {
+func ValidateHost(ctx context.Context, resolver Resolver, host string, policy Policy) ([]net.IPAddr, error) {
 	// A literal IP needs no lookup — judge it directly.
 	if ip := net.ParseIP(host); ip != nil {
-		if IsBlockedIP(ip) {
+		if IsBlockedIPPolicy(ip, policy) {
 			return nil, fmt.Errorf("%w: %s", ErrBlockedTarget, host)
 		}
 		return []net.IPAddr{{IP: ip}}, nil
@@ -43,7 +43,7 @@ func ValidateHost(ctx context.Context, resolver Resolver, host string) ([]net.IP
 	}
 
 	for _, addr := range addrs {
-		if IsBlockedIP(addr.IP) {
+		if IsBlockedIPPolicy(addr.IP, policy) {
 			return nil, fmt.Errorf("%w: %s resolves to %s", ErrBlockedTarget, host, addr.IP)
 		}
 	}

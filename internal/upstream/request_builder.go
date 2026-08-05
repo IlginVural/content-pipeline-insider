@@ -1,12 +1,15 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"content-pipeline-insider/internal/secrets"
@@ -66,8 +69,8 @@ func BuildRequest(
 	}
 
 	var req *http.Request
-	if body != "" {
-		req, err = http.NewRequestWithContext(ctx, method, u.String(), strings.NewReader(body))
+	if len(body) > 0 {
+		req, err = http.NewRequestWithContext(ctx, method, u.String(), bytes.NewReader(body))
 	} else {
 		req, err = http.NewRequestWithContext(ctx, method, u.String(), nil)
 	}
@@ -164,30 +167,169 @@ func substitutePath(template string, params map[string]ParameterDef, resolved ma
 	return result, nil
 }
 
-func substituteBody(template string, params map[string]ParameterDef, resolved map[string]string) (string, error) {
-	if template == "" {
-		return "", nil
+// bodyPlaceholder matches {name} where name is a bare identifier. Every
+// such occurrence is treated as an intended substitution point, so a
+// typo like {prodctId} is reported rather than shipped as literal text.
+// Literal braces in a body template are consequently not supported.
+var bodyPlaceholder = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// substituteBody fills a JSON body template with resolved parameters.
+//
+// The template is decoded, substituted at value positions, and marshalled
+// once. It is never treated as text. That is the whole point: splicing
+// values into serialized JSON means hand-rolling an escape layer that
+// competes with encoding/json, and a value that contains a quote, a
+// backslash, or a newline eventually wins that competition. Working on
+// the decoded document instead makes malformed output impossible and
+// keeps a parameter structurally unable to introduce fields it was never
+// declared to fill.
+func substituteBody(template json.RawMessage, params map[string]ParameterDef, resolved map[string]string) ([]byte, error) {
+	if len(bytes.TrimSpace(template)) == 0 {
+		return nil, nil
 	}
-	result := template
-	for name, def := range params {
-		if def.Location != LocationBody {
-			continue
+
+	// UseNumber so numbers already present in the template keep their
+	// exact text — a price of 249.90 must not become 249.9.
+	decoder := json.NewDecoder(bytes.NewReader(template))
+	decoder.UseNumber()
+
+	var document any
+	if err := decoder.Decode(&document); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidBody, err)
+	}
+	if decoder.More() {
+		return nil, fmt.Errorf("%w: unexpected data after the JSON value", ErrInvalidBody)
+	}
+
+	substituted, err := substituteValue(document, params, resolved)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := json.Marshal(substituted)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidBody, err)
+	}
+	return out, nil
+}
+
+func substituteValue(value any, params map[string]ParameterDef, resolved map[string]string) (any, error) {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, child := range v {
+			// Field names are never substituted. A parameter supplies a
+			// value; letting one name a field would hand it control of
+			// the document's shape, which is exactly the property this
+			// design exists to guarantee.
+			if bodyPlaceholder.MatchString(key) {
+				return nil, fmt.Errorf("%w: a parameter may not name the field %q", ErrInvalidBody, key)
+			}
+			sub, err := substituteValue(child, params, resolved)
+			if err != nil {
+				return nil, err
+			}
+			out[key] = sub
 		}
-		placeholder := "{" + name + "}"
-		if !strings.Contains(result, placeholder) {
-			continue
+		return out, nil
+
+	case []any:
+		out := make([]any, len(v))
+		for i, child := range v {
+			sub, err := substituteValue(child, params, resolved)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = sub
 		}
-		val, ok := resolved[name]
-		if !ok {
-			return "", fmt.Errorf("%w: %s", ErrMissingParameter, name)
-		}
-		encoded, err := json.Marshal(val)
+		return out, nil
+
+	case string:
+		return substituteString(v, params, resolved)
+
+	default:
+		// Numbers, booleans and null carry through untouched.
+		return value, nil
+	}
+}
+
+func substituteString(s string, params map[string]ParameterDef, resolved map[string]string) (any, error) {
+	matches := bodyPlaceholder.FindAllStringSubmatchIndex(s, -1)
+	if len(matches) == 0 {
+		return s, nil
+	}
+
+	// A string that is nothing but a placeholder takes the parameter's
+	// declared type: {"quantity":"{qty}"} with qty declared integer sends
+	// 5, not "5". This is what makes ParameterDef.Type mean something on
+	// the way out as well as on the way in — previously the wire format
+	// depended on whether the admin happened to type quotes.
+	if len(matches) == 1 && matches[0][0] == 0 && matches[0][1] == len(s) {
+		name := s[matches[0][2]:matches[0][3]]
+		def, val, err := lookupBodyParameter(name, params, resolved)
 		if err != nil {
-			return "", fmt.Errorf("%w: %s: %v", ErrInvalidParameter, name, err)
+			return nil, err
 		}
-		// Strip json.Marshal's surrounding quotes — the template already
-		// supplies them, e.g. {"id": "{productId}"}.
-		result = strings.ReplaceAll(result, placeholder, strings.Trim(string(encoded), `"`))
+		return typedBodyValue(name, def, val)
 	}
-	return result, nil
+
+	// A placeholder inside a longer string interpolates as text, e.g.
+	// {"query":"sku:{productId} AND active:true"}. Still safe: the result
+	// is a decoded string that json.Marshal escapes on the way out.
+	var b strings.Builder
+	last := 0
+	for _, m := range matches {
+		name := s[m[2]:m[3]]
+		if _, _, err := lookupBodyParameter(name, params, resolved); err != nil {
+			return nil, err
+		}
+		b.WriteString(s[last:m[0]])
+		b.WriteString(resolved[name])
+		last = m[1]
+	}
+	b.WriteString(s[last:])
+	return b.String(), nil
+}
+
+func lookupBodyParameter(name string, params map[string]ParameterDef, resolved map[string]string) (ParameterDef, string, error) {
+	def, declared := params[name]
+	if !declared || def.Location != LocationBody {
+		return ParameterDef{}, "", fmt.Errorf("%w: {%s} is not a declared body parameter", ErrInvalidBody, name)
+	}
+	val, ok := resolved[name]
+	if !ok {
+		return ParameterDef{}, "", fmt.Errorf("%w: %s", ErrMissingParameter, name)
+	}
+	return def, val, nil
+}
+
+// typedBodyValue converts a resolved value, which is always a string, into
+// the JSON type the parameter was declared to hold. ResolveParameters has
+// already validated the text, so a failure here means the two disagree.
+func typedBodyValue(name string, def ParameterDef, val string) (any, error) {
+	switch def.Type {
+	case "integer":
+		if _, err := strconv.ParseInt(val, 10, 64); err != nil {
+			return nil, fmt.Errorf("%w: %s must be an integer", ErrInvalidParameter, name)
+		}
+		// json.Number marshals as its literal text, so large ids survive
+		// intact instead of being rounded through float64.
+		return json.Number(val), nil
+
+	case "number":
+		if _, err := strconv.ParseFloat(val, 64); err != nil {
+			return nil, fmt.Errorf("%w: %s must be a number", ErrInvalidParameter, name)
+		}
+		return json.Number(val), nil
+
+	case "boolean":
+		parsed, err := strconv.ParseBool(val)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s must be a boolean", ErrInvalidParameter, name)
+		}
+		return parsed, nil
+
+	default:
+		return val, nil
+	}
 }

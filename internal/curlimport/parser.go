@@ -7,6 +7,23 @@ import (
 	"strings"
 )
 
+// urlEncodeDataPart applies curl's --data-urlencode semantics: for
+// "name=value" the name is left alone and only the value is encoded; a
+// bare "value" or "=value" is encoded whole.
+//
+// The result is stored already encoded, which both downstream paths
+// handle correctly — as a body it is the exact wire format, and with -G
+// it round-trips through url.ParseQuery back to the intended value.
+func urlEncodeDataPart(val string) (string, error) {
+	if name, value, found := strings.Cut(val, "="); found && name != "" {
+		if strings.ContainsAny(name, "&") {
+			return "", fmt.Errorf("%w: %q", ErrInvalidDataField, name)
+		}
+		return name + "=" + url.QueryEscape(value), nil
+	}
+	return url.QueryEscape(strings.TrimPrefix(val, "=")), nil
+}
+
 // Parse tokenizes and parses a full cURL command into an ImportedRequest.
 // It never invokes a shell or touches the filesystem — every value comes
 // from the token stream alone.
@@ -73,11 +90,23 @@ func Parse(command string) (*ImportedRequest, error) {
 				req.Auth = &ImportedAuth{Username: user, Password: pass}
 			case "--url":
 				rawURL = val
-			case "-d", "--data", "--data-raw", "--data-urlencode":
+			case "-d", "--data", "--data-raw":
 				if strings.HasPrefix(val, "@") {
 					return nil, fmt.Errorf("%w: reading data from a file is not allowed (%s %s)", ErrDangerousFlag, tok, val)
 				}
 				dataParts = append(dataParts, val)
+			case "--data-urlencode":
+				if strings.HasPrefix(val, "@") {
+					return nil, fmt.Errorf("%w: reading data from a file is not allowed (%s %s)", ErrDangerousFlag, tok, val)
+				}
+				// Unlike -d, this flag percent-encodes its content. Storing
+				// it raw produced a request that differed from the one the
+				// administrator tested, with no indication anything changed.
+				encoded, err := urlEncodeDataPart(val)
+				if err != nil {
+					return nil, err
+				}
+				dataParts = append(dataParts, encoded)
 			}
 			continue
 		}
@@ -105,13 +134,24 @@ func Parse(command string) (*ImportedRequest, error) {
 		return nil, fmt.Errorf("%w: unsupported scheme %q", ErrInvalidURL, u.Scheme)
 	}
 
+	// Credentials in the URL are real credentials. u.Host excludes the
+	// userinfo section, so building BaseURL from it silently dropped
+	// them: an administrator pasted a working command and got a
+	// configuration with no authentication, which then failed against
+	// the partner for no visible reason. An explicit -u wins, matching
+	// curl's own precedence.
+	if u.User != nil && req.Auth == nil {
+		password, _ := u.User.Password()
+		req.Auth = &ImportedAuth{Username: u.User.Username(), Password: password}
+	}
+
 	req.BaseURL = u.Scheme + "://" + u.Host
 	req.Path = u.Path
 
 	query := u.Query()
 	switch {
 	case isGet && len(dataParts) > 0:
-	
+
 		for _, part := range dataParts {
 			extra, err := url.ParseQuery(part)
 			if err != nil {
@@ -132,7 +172,11 @@ func Parse(command string) (*ImportedRequest, error) {
 
 	for name, values := range query {
 		for _, v := range values {
-			req.Query = append(req.Query, ImportedParameter{Name: name, Value: v})
+			req.Query = append(req.Query, ImportedParameter{
+				Name:        name,
+				Value:       v,
+				IsSensitive: isSensitiveQueryParam(name),
+			})
 		}
 	}
 	sort.Slice(req.Query, func(i, j int) bool {

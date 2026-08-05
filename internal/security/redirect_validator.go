@@ -21,22 +21,22 @@ const MaxRedirects = 3
 // check passed, the client dutifully follows the redirect, and the
 // request lands exactly where the check was supposed to prevent. Every
 // hop is a new destination and gets judged like the first one.
-func ValidateRedirect(ctx context.Context, resolver Resolver, req *http.Request, via []*http.Request, allowHTTP bool) error {
+func ValidateRedirect(ctx context.Context, resolver Resolver, req *http.Request, via []*http.Request, policy Policy) error {
 	if len(via) >= MaxRedirects {
 		return fmt.Errorf("%w: more than %d", ErrTooManyRedirects, MaxRedirects)
 	}
-	return ValidateTarget(ctx, resolver, req.URL, allowHTTP)
+	return ValidateTarget(ctx, resolver, req.URL, policy)
 }
 
 // ValidateTarget is the full pre-flight check for one URL: scheme,
 // port, literal IP, then DNS resolution and per-address checks.
-func ValidateTarget(ctx context.Context, resolver Resolver, u *url.URL, allowHTTP bool) error {
-	if err := ValidateURL(u, allowHTTP); err != nil {
+func ValidateTarget(ctx context.Context, resolver Resolver, u *url.URL, policy Policy) error {
+	if err := ValidateURL(u, policy); err != nil {
 		return err
 	}
 	if resolver == nil {
 		resolver = DefaultResolver
 	}
-	_, err := ValidateHost(ctx, resolver, u.Hostname())
+	_, err := ValidateHost(ctx, resolver, u.Hostname(), policy)
 	return err
 }

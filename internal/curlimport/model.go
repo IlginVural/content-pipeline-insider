@@ -20,8 +20,9 @@ type ImportedHeader struct {
 }
 
 type ImportedParameter struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
+	Name        string `json:"name"`
+	Value       string `json:"value"`
+	IsSensitive bool   `json:"sensitive"`
 }
 
 type ImportedAuth struct {

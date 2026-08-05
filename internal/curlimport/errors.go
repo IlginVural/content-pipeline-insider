@@ -15,4 +15,5 @@ var (
 	ErrInvalidURL        = errors.New("curlimport: could not parse URL")
 	ErrInvalidHeader     = errors.New(`curlimport: header must be in "Name: Value" form`)
 	ErrInvalidUser       = errors.New(`curlimport: --user must be in "user:password" form`)
+	ErrInvalidDataField  = errors.New("curlimport: --data-urlencode field name is invalid")
 )

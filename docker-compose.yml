@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    # Credentials match the development default in internal/config, so a
+    # fresh checkout runs `make db-up && make migrate` with no env setup.
+    # They are local-only; prod supplies DATABASE_URL from the environment.
+    environment:
+      POSTGRES_USER: content_pipeline_insider
+      POSTGRES_PASSWORD: content_pipeline_insider
+      POSTGRES_DB: content_pipeline_insider
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Without this, `make migrate` immediately after `db-up` hits a
+    # container that is listening but not yet accepting queries.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U content_pipeline_insider"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  postgres_data:

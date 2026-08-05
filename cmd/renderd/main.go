@@ -15,9 +15,9 @@ import (
 	"syscall"
 	"time"
 
-	"contentrender/internal/api"
-	"contentrender/internal/config"
-	"contentrender/internal/logger"
+	"content-pipeline-insider/internal/api"
+	"content-pipeline-insider/internal/config"
+	"content-pipeline-insider/internal/logger"
 )
 
 func main() {

@@ -1,11 +1,9 @@
-
 package curlimport
 
 import (
 	"fmt"
 	"strings"
 )
-
 
 func Tokenize(input string) ([]string, error) {
 	var tokens []string
@@ -31,7 +29,7 @@ func Tokenize(input string) ([]string, error) {
 
 		switch state {
 		case inSingle:
-			
+
 			if c == '\'' {
 				state = inNormal
 				i++
@@ -53,7 +51,7 @@ func Tokenize(input string) ([]string, error) {
 				i += 2
 				continue
 			}
-		
+
 			if c == '$' || c == '`' {
 				return nil, fmt.Errorf("%w: %q inside double quotes", ErrDangerousToken, string(c))
 			}

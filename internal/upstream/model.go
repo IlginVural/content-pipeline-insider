@@ -1,11 +1,20 @@
 package upstream
 
+import "encoding/json"
+
 // UpstreamConfig is the persisted wayfor calling a partner API.
 
 type UpstreamConfig struct {
-	Method          string                  `json:"method"`
-	URLTemplate     string                  `json:"urlTemplate"`
-	BodyTemplate    string                  `json:"bodyTemplate,omitempty"`
+	Method      string `json:"method"`
+	URLTemplate string `json:"urlTemplate"`
+
+	// BodyTemplate is a JSON document, not text. Placeholders live at
+	// value positions inside it and are substituted into the decoded
+	// document, which is then marshalled once. Keeping it structured is
+	// what makes escaping json.Marshal's problem rather than ours, and
+	// what lets a parameter's declared type reach the wire.
+	BodyTemplate json.RawMessage `json:"bodyTemplate,omitempty"`
+
 	Headers         []Header                `json:"headers,omitempty"`
 	QueryParameters []QueryParam            `json:"queryParameters,omitempty"`
 	Parameters      map[string]ParameterDef `json:"parameters,omitempty"`

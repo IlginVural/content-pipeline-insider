@@ -1,6 +1,5 @@
 package api
 
-
 import (
 	"log/slog"
 	"net/http"
