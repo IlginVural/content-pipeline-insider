@@ -24,6 +24,16 @@ func (r ImportedRequest) Redacted() ImportedRequest {
 		out.Headers[i] = h
 	}
 
+	// Query parameters carry credentials as often as headers do —
+	// ?api_key=, ?access_token=, and the ?signature= of a signed URL.
+	out.Query = make([]ImportedParameter, len(r.Query))
+	for i, q := range r.Query {
+		if q.IsSensitive {
+			q.Value = Mask
+		}
+		out.Query[i] = q
+	}
+
 	if r.Auth != nil {
 		out.Auth = &ImportedAuth{Username: r.Auth.Username, Password: Mask}
 	}

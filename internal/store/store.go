@@ -27,7 +27,6 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
-
 func New(ctx context.Context, dsn string) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {

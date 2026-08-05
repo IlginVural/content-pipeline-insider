@@ -11,4 +11,5 @@ var (
 	ErrSecretResolution  = errors.New("upstream: failed to resolve secret-backed header")
 	ErrUnsupportedMethod = errors.New("upstream: HTTP method is not allowed")
 	ErrInvalidAuth       = errors.New("upstream: invalid authentication configuration")
+	ErrInvalidBody       = errors.New("upstream: invalid request body template")
 )

@@ -67,7 +67,33 @@ func parseCIDRs(cidrs []string) []*net.IPNet {
 	return out
 }
 
+// Policy carries the exceptions a caller is allowed to make. The zero
+// value is the strict production posture, so a caller that forgets to
+// build one gets full protection rather than none.
+//
+// Each field widens exactly one rule. There is deliberately no "disable
+// everything" option: an escape hatch that turns off the address checks
+// wholesale is indistinguishable from having no checks, and it is the
+// setting that ends up in production by accident.
+type Policy struct {
+	// AllowHTTP permits plaintext http:// targets. Partner APIs are
+	// https; this exists for local development against a test server.
+	AllowHTTP bool
+
+	// AllowLoopback permits 127.0.0.0/8 and ::1, and nothing else.
+	// Link-local stays blocked, so the cloud metadata endpoint at
+	// 169.254.169.254 is unreachable even with this set. For local
+	// development only.
+	AllowLoopback bool
+}
+
+// IsBlockedIP reports whether an address is off limits under the strict
+// policy. Callers needing a development exception use IsBlockedIPPolicy.
 func IsBlockedIP(ip net.IP) bool {
+	return IsBlockedIPPolicy(ip, Policy{})
+}
+
+func IsBlockedIPPolicy(ip net.IP, policy Policy) bool {
 	if ip == nil {
 		return true // cannot verify it, so refuse it
 	}
@@ -75,6 +101,14 @@ func IsBlockedIP(ip net.IP) bool {
 	if v4 := ip.To4(); v4 != nil {
 		ip = v4
 	}
+
+	// Checked before the block list rather than as a bypass around it:
+	// only loopback is exempted, and every other reserved range below
+	// still applies.
+	if policy.AllowLoopback && ip.IsLoopback() {
+		return false
+	}
+
 	for _, network := range blockedNets {
 		if network.Contains(ip) {
 			return true
@@ -83,9 +117,9 @@ func IsBlockedIP(ip net.IP) bool {
 	return false
 }
 
-func ValidateURL(u *url.URL, allowHTTP bool) error {
+func ValidateURL(u *url.URL, policy Policy) error {
 	scheme := strings.ToLower(u.Scheme)
-	if scheme != "https" && !(allowHTTP && scheme == "http") {
+	if scheme != "https" && !(policy.AllowHTTP && scheme == "http") {
 		return fmt.Errorf("%w: %q (https is required)", ErrBlockedScheme, u.Scheme)
 	}
 
@@ -99,7 +133,7 @@ func ValidateURL(u *url.URL, allowHTTP bool) error {
 	}
 
 	// A literal IP in the URL can be judged immediately, no DNS needed.
-	if ip := net.ParseIP(host); ip != nil && IsBlockedIP(ip) {
+	if ip := net.ParseIP(host); ip != nil && IsBlockedIPPolicy(ip, policy) {
 		return fmt.Errorf("%w: %s", ErrBlockedTarget, host)
 	}
 	return nil

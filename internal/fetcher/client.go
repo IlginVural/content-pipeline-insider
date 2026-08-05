@@ -30,8 +30,13 @@ func New(opts Options) *Fetcher {
 
 		DisableCompression: false,
 
+		// TLS 1.2, not 1.3. Requiring 1.3 refuses a large share of
+		// partner APIs that are perfectly well configured but have not
+		// moved yet, and it fails as an opaque handshake error that
+		// reads like a network fault rather than a policy choice. 1.2
+		// with modern cipher suites is the current baseline.
 		TLSClientConfig: &tls.Config{
-			MinVersion: tls.VersionTLS13,
+			MinVersion: tls.VersionTLS12,
 		},
 	}
 
@@ -50,16 +55,12 @@ func (f *Fetcher) guardedDial(ctx context.Context, network, addr string) (net.Co
 		return nil, fmt.Errorf("%w: %s", security.ErrBlockedTarget, addr)
 	}
 
-	addrs, err := security.ValidateHost(ctx, security.DefaultResolver, host)
+	// The addresses returned here are the ones dialed below. Re-resolving
+	// before dialing would reopen the DNS rebinding window this check
+	// exists to close: the name could answer differently the second time.
+	addrs, err := security.ValidateHost(ctx, security.DefaultResolver, host, f.opts.policy())
 	if err != nil {
-		if !f.opts.allowLoopback {
-			return nil, err
-		}
-
-		addrs, err = net.DefaultResolver.LookupIPAddr(ctx, host)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %s: %v", ErrBlockedTarget, host, err)
-		}
+		return nil, err
 	}
 
 	dialer := &net.Dialer{Timeout: DialTimeout}
@@ -78,19 +79,21 @@ func (f *Fetcher) guardedDial(ctx context.Context, network, addr string) (net.Co
 	return nil, fmt.Errorf("%w: %s: %v", ErrDialFailed, host, lastErr)
 }
 
+// checkRedirect judges every hop with the same full check as the original
+// URL — scheme, port, literal address, and DNS resolution.
+//
+// It previously checked only the scheme, port and literal IP, leaving the
+// resolution check to guardedDial. That happened to hold, but only
+// incidentally: a redirect to a public hostname resolving to loopback was
+// stopped by the dialer rather than by the redirect guard, and surfaced
+// as a connection failure instead of a blocked target.
 func (f *Fetcher) checkRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) >= security.MaxRedirects {
-		return fmt.Errorf("%w: more than %d", ErrTooManyRedirects, security.MaxRedirects)
-	}
-	if err := security.ValidateURL(req.URL, f.opts.AllowHTTP || f.opts.allowLoopback); err != nil {
-		return err
-	}
-	return nil
+	return security.ValidateRedirect(req.Context(), security.DefaultResolver, req, via, f.opts.policy())
 }
 
 // sends a request built by upstream and returns the response body
 func (f *Fetcher) Do(ctx context.Context, req *http.Request) (*Response, error) {
-	if err := security.ValidateURL(req.URL, f.opts.AllowHTTP || f.opts.allowLoopback); err != nil {
+	if err := security.ValidateURL(req.URL, f.opts.policy()); err != nil {
 		return nil, err
 	}
 

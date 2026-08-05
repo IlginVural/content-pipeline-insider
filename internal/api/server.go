@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"contentrender/internal/config"
+	"content-pipeline-insider/internal/config"
 )
 
 // Server wraps *http.Server so main.go doesn't touch stdlib HTTP directly.

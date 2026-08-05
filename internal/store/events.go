@@ -14,7 +14,6 @@ type RenderEvent struct {
 	RenderedAt time.Time
 }
 
-
 func (s *Store) InsertRenderEvent(ctx context.Context, e RenderEvent) error {
 	const q = `
 		INSERT INTO render_events (source_id, cached, duration_ms, status, rendered_at)
