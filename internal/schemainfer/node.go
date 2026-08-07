@@ -31,7 +31,12 @@ type SchemaNode struct {
 	Type     Type `json:"type"`
 	Nullable bool `json:"nullable"`
 
-	Selectable  bool `json:"selectable"`            // can an admin select this field for inclusion in the output?
+	// Selectable answers whether an admin may pick this field for the
+	// output. Two kinds of node are described but never selectable:
+	// containers, because selecting one would copy an unreviewed subtree,
+	// and anything below an array, because its expression is a projection
+	// that yields a list no data type can hold.
+	Selectable  bool `json:"selectable"`
 	SampleValue any  `json:"sampleValue,omitempty"` // a value from the response, for display to the admin
 
 	MixedTypes []Type       `json:"mixedTypes,omitempty"` // if TypeMixed, what types were found in the array
