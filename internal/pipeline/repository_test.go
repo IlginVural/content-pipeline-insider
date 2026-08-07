@@ -448,3 +448,78 @@ func upperFirst(s string) string {
 	}
 	return string(s[0]-32) + s[1:] // ASCII-only, and these names are generated
 }
+
+func TestListRecentPipelines(t *testing.T) {
+	repo, pool := testRepo(t)
+	p := newPipeline(t, repo, pool)
+
+	if _, err := repo.SaveDraftVersion(context.Background(), p.ID, uuid.New(), sampleUpstream(), sampleMappings()); err != nil {
+		t.Fatalf("SaveDraftVersion: %v", err)
+	}
+
+	list, err := repo.ListRecentPipelines(context.Background(), 50)
+	if err != nil {
+		t.Fatalf("ListRecentPipelines: %v", err)
+	}
+
+	var found *pipeline.PipelineSummary
+	for i := range list {
+		if list[i].ID == p.ID {
+			found = &list[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("the pipeline just created is not in the listing")
+	}
+	if found.VersionCount != 1 || found.LatestVersion != 1 {
+		t.Errorf("VersionCount=%d LatestVersion=%d, want 1 and 1", found.VersionCount, found.LatestVersion)
+	}
+	// Nothing is published, so the column is NULL in the database. The scan
+	// must survive it rather than erroring.
+	if found.ActiveVersionID != uuid.Nil {
+		t.Errorf("ActiveVersionID = %s, want uuid.Nil for an unpublished pipeline", found.ActiveVersionID)
+	}
+}
+
+func TestListVersions(t *testing.T) {
+	repo, pool := testRepo(t)
+	p := newPipeline(t, repo, pool)
+	author := uuid.New()
+
+	for i := 0; i < 2; i++ {
+		if _, err := repo.SaveDraftVersion(context.Background(), p.ID, author, sampleUpstream(), sampleMappings()); err != nil {
+			t.Fatalf("SaveDraftVersion %d: %v", i, err)
+		}
+	}
+
+	versions, err := repo.ListVersions(context.Background(), p.ID)
+	if err != nil {
+		t.Fatalf("ListVersions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("got %d versions, want 2", len(versions))
+	}
+	// Newest first.
+	if versions[0].VersionNumber != 2 || versions[1].VersionNumber != 1 {
+		t.Errorf("version order = %d,%d, want 2,1", versions[0].VersionNumber, versions[1].VersionNumber)
+	}
+	if got := versions[0].FieldCount; got != len(sampleMappings()) {
+		t.Errorf("FieldCount = %d, want %d", got, len(sampleMappings()))
+	}
+	if versions[0].PublishedAt != nil {
+		t.Errorf("PublishedAt = %v, want nil for a draft", versions[0].PublishedAt)
+	}
+}
+
+func TestListVersionsUnknownPipeline(t *testing.T) {
+	repo, _ := testRepo(t)
+
+	versions, err := repo.ListVersions(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("ListVersions: %v", err)
+	}
+	if len(versions) != 0 {
+		t.Errorf("got %d versions for an unknown pipeline, want 0", len(versions))
+	}
+}

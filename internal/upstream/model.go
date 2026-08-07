@@ -51,9 +51,16 @@ type Header struct {
 	Format          string       `json:"format,omitempty"`
 }
 
+// QueryParam mirrors Header's static/secret split: ?api_key= and
+// ?access_token= are credentials as often as an Authorization header is.
+//
+// An empty Source means static, so configs written before this field
+// existed keep resolving.
 type QueryParam struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
+	Name            string       `json:"name"`
+	Source          HeaderSource `json:"source,omitempty"`
+	Value           string       `json:"value,omitempty"`
+	SecretReference string       `json:"secretReference,omitempty"`
 }
 
 type ParameterLocation string

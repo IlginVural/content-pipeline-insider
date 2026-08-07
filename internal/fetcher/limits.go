@@ -13,6 +13,15 @@ const (
 
 	DialTimeout = 3 * time.Second
 
+	// DialStagger is how long each address waits before its dial starts, so
+	// several run concurrently rather than one blocking the next. Without it
+	// a host whose first address is unroutable — a dual-stack partner API on
+	// a machine with no IPv6 route, which is most laptops — pays the full
+	// DialTimeout on every request before falling back.
+	//
+	// 300ms is RFC 8305's recommended Connection Attempt Delay.
+	DialStagger = 300 * time.Millisecond
+
 	TLSHandshakeTimeout = 3 * time.Second
 
 	IdleConnTimeout = 90 * time.Second

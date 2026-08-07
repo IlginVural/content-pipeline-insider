@@ -8,8 +8,16 @@ services:
       POSTGRES_USER: content_pipeline_insider
       POSTGRES_PASSWORD: content_pipeline_insider
       POSTGRES_DB: content_pipeline_insider
+    # Published on 5433, not 5432. A native Postgres install already owning
+    # 5432 is the common case on a developer machine, and binding the same
+    # port made `make db-up` fail with "address already in use" on a setup
+    # that was in fact working fine.
+    #
+    # So: if you have a local Postgres, it stays the default and you never
+    # need this container. If you don't, run `make db-up` and point
+    # DATABASE_URL at 5433. `make db-status` reports which one answers.
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     # Without this, `make migrate` immediately after `db-up` hits a
