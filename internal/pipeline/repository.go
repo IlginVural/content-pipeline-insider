@@ -238,6 +238,105 @@ func (r *Repository) GetVersion(ctx context.Context, pipelineID uuid.UUID, versi
 	return version, nil
 }
 
+// PipelineSummary is a pipeline plus the counts a listing needs, so a caller
+// rendering an index does not fan out one query per row.
+type PipelineSummary struct {
+	Pipeline
+	VersionCount  int `json:"versionCount"`
+	LatestVersion int `json:"latestVersion"`
+}
+
+// ListRecentPipelines returns the newest pipelines across ALL tenants.
+//
+// It is deliberately not tenant-scoped, which makes it an operator and local
+// development view rather than a customer-facing one: a multi-tenant API must
+// never expose a cross-tenant list. Callers are responsible for keeping it out
+// of production — internal/api gates it on the environment.
+func (r *Repository) ListRecentPipelines(ctx context.Context, limit int) ([]PipelineSummary, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	const q = `
+		-- active_version_id is NULL until a version is published, and
+		-- Pipeline.ActiveVersionID is a plain uuid.UUID whose documented
+		-- "none" value is uuid.Nil. Coalescing keeps the two agreeing
+		-- instead of failing the scan.
+		SELECT p.id, p.tenant_id, p.name, p.status,
+		       COALESCE(p.active_version_id, '00000000-0000-0000-0000-000000000000'::uuid),
+		       p.created_at, p.updated_at,
+		       COUNT(v.id), COALESCE(MAX(v.version_number), 0)
+		FROM content_pipelines p
+		LEFT JOIN content_pipeline_versions v ON v.pipeline_id = p.id
+		GROUP BY p.id
+		ORDER BY p.created_at DESC
+		LIMIT $1
+	`
+
+	rows, err := r.pool.Query(ctx, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("pipeline: list pipelines: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PipelineSummary
+	for rows.Next() {
+		var s PipelineSummary
+		var status string
+		if err := rows.Scan(&s.ID, &s.TenantID, &s.Name, &status, &s.ActiveVersionID,
+			&s.CreatedAt, &s.UpdatedAt, &s.VersionCount, &s.LatestVersion); err != nil {
+			return nil, fmt.Errorf("pipeline: scan pipeline: %w", err)
+		}
+		s.Status = Status(status)
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pipeline: list pipelines: %w", err)
+	}
+	return out, nil
+}
+
+// VersionSummary describes a version without loading its config or mappings.
+type VersionSummary struct {
+	VersionNumber int           `json:"versionNumber"`
+	Status        VersionStatus `json:"status"`
+	FieldCount    int           `json:"fieldCount"`
+	CreatedAt     time.Time     `json:"createdAt"`
+	PublishedAt   *time.Time    `json:"publishedAt,omitempty"`
+}
+
+func (r *Repository) ListVersions(ctx context.Context, pipelineID uuid.UUID) ([]VersionSummary, error) {
+	const q = `
+		SELECT v.version_number, v.status, COUNT(m.output_name),
+		       v.created_at, v.published_at
+		FROM content_pipeline_versions v
+		LEFT JOIN content_pipeline_field_mappings m ON m.version_id = v.id
+		WHERE v.pipeline_id = $1
+		GROUP BY v.id
+		ORDER BY v.version_number DESC
+	`
+
+	rows, err := r.pool.Query(ctx, q, pipelineID)
+	if err != nil {
+		return nil, fmt.Errorf("pipeline: list versions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []VersionSummary
+	for rows.Next() {
+		var v VersionSummary
+		var status string
+		if err := rows.Scan(&v.VersionNumber, &status, &v.FieldCount, &v.CreatedAt, &v.PublishedAt); err != nil {
+			return nil, fmt.Errorf("pipeline: scan version: %w", err)
+		}
+		v.Status = VersionStatus(status)
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pipeline: list versions: %w", err)
+	}
+	return out, nil
+}
+
 // fieldMappings reads a version's selection in display order. The ORDER BY
 // matches field_mappings_version_order_idx, and its second term makes ties
 // deterministic — two fields may legitimately share a sort_order.

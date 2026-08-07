@@ -3,6 +3,7 @@ package fetcher
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,13 +13,24 @@ import (
 	"content-pipeline-insider/internal/security"
 )
 
+type dialResult struct {
+	conn net.Conn
+	err  error
+}
+
+// dialFunc is net.Dialer.DialContext's signature. Injectable so the address
+// race can be tested without real sockets.
+type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
 type Fetcher struct {
 	client *http.Client
 	opts   Options
+	dial   dialFunc
 }
 
 func New(opts Options) *Fetcher {
 	f := &Fetcher{opts: opts}
+	f.dial = (&net.Dialer{Timeout: DialTimeout}).DialContext
 
 	transport := &http.Transport{
 		DialContext:           f.guardedDial,
@@ -63,20 +75,75 @@ func (f *Fetcher) guardedDial(ctx context.Context, network, addr string) (net.Co
 		return nil, err
 	}
 
-	dialer := &net.Dialer{Timeout: DialTimeout}
+	conn, err := f.raceDial(ctx, network, addrs, port)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", ErrDialFailed, host, err)
+	}
+	return conn, nil
+}
+
+// raceDial starts a dial to every address, each staggered by DialStagger, and
+// returns the first connection that succeeds. Losing dials are cancelled, and
+// any connection that arrives after a winner is closed rather than leaked.
+//
+// Dialing serially instead — one address, wait for its timeout, then the next
+// — meant a single unroutable address ahead of a good one cost DialTimeout on
+// every request. That is the common case, not an edge case: a dual-stack host
+// resolving to IPv6 first on a machine with no IPv6 route.
+func (f *Fetcher) raceDial(ctx context.Context, network string, addrs []net.IPAddr, port string) (net.Conn, error) {
+	if len(addrs) == 0 {
+		return nil, errors.New("no addresses to dial")
+	}
+
+	// Not deferred: cancelling on the way out would kill the winning
+	// connection. Losers are cancelled explicitly on each exit path.
+	ctx, cancel := context.WithCancel(ctx)
+
+	// Buffered by len(addrs) so a losing goroutine never blocks on send once
+	// the winner has returned and stopped reading.
+	results := make(chan dialResult, len(addrs))
+
+	for i, a := range addrs {
+		go func(i int, addr string) {
+			if delay := time.Duration(i) * DialStagger; delay > 0 {
+				select {
+				case <-time.After(delay):
+				case <-ctx.Done():
+					results <- dialResult{err: ctx.Err()}
+					return
+				}
+			}
+			conn, err := f.dial(ctx, network, addr)
+			results <- dialResult{conn: conn, err: err}
+		}(i, net.JoinHostPort(a.IP.String(), port))
+	}
 
 	var lastErr error
-	for _, a := range addrs {
-		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(a.IP.String(), port))
-		if err == nil {
-			return conn, nil
+	for i := 0; i < len(addrs); i++ {
+		r := <-results
+		if r.err == nil {
+			cancel()
+			// A slower address can still connect after the winner. Close
+			// those rather than leak the socket.
+			go drainConns(results, len(addrs)-i-1)
+			return r.conn, nil
 		}
-		lastErr = err
+		lastErr = r.err
 	}
+
+	cancel()
 	if lastErr == nil {
-		lastErr = fmt.Errorf("no addresses for %s", host)
+		lastErr = errors.New("no address could be dialed")
 	}
-	return nil, fmt.Errorf("%w: %s: %v", ErrDialFailed, host, lastErr)
+	return nil, lastErr
+}
+
+func drainConns(results <-chan dialResult, n int) {
+	for i := 0; i < n; i++ {
+		if r := <-results; r.conn != nil {
+			r.conn.Close()
+		}
+	}
 }
 
 // checkRedirect judges every hop with the same full check as the original

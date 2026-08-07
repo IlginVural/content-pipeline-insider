@@ -3,8 +3,12 @@ package fetcher
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"content-pipeline-insider/internal/security"
 )
@@ -245,5 +249,115 @@ func TestLimitDefaults(t *testing.T) {
 	}
 	if got := (Options{MaxResponseBytes: 42}).maxBytes(); got != 42 {
 		t.Errorf("maxBytes() = %v, want the configured value", got)
+	}
+}
+
+// fakeConn is the minimum net.Conn a race test needs: raceDial only ever
+// stores it, returns it, or closes it.
+type fakeConn struct {
+	net.Conn
+	addr   string
+	closed atomic.Bool
+}
+
+func (c *fakeConn) Close() error { c.closed.Store(true); return nil }
+
+func addrsOf(ips ...string) []net.IPAddr {
+	out := make([]net.IPAddr, 0, len(ips))
+	for _, ip := range ips {
+		out = append(out, net.IPAddr{IP: net.ParseIP(ip)})
+	}
+	return out
+}
+
+// The bug this replaced: a first address that never answers cost the full
+// DialTimeout before the good address was tried at all.
+func TestRaceDialSkipsPastAnUnroutableAddress(t *testing.T) {
+	f := &Fetcher{}
+	f.dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if strings.HasPrefix(addr, "[") {
+			// The unroutable one: hangs until the context is cancelled.
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return &fakeConn{addr: addr}, nil
+	}
+
+	started := time.Now()
+	conn, err := f.raceDial(context.Background(), "tcp", addrsOf("2001:db8::1", "192.0.2.7"), "443")
+	elapsed := time.Since(started)
+
+	if err != nil {
+		t.Fatalf("raceDial() error = %v", err)
+	}
+	if got := conn.(*fakeConn).addr; got != "192.0.2.7:443" {
+		t.Errorf("connected to %q, want the routable address", got)
+	}
+	// The good address starts one DialStagger in. Anything near DialTimeout
+	// means the dials ran serially again.
+	if elapsed > DialTimeout/2 {
+		t.Errorf("took %s, want roughly %s — dials are not racing", elapsed, DialStagger)
+	}
+}
+
+func TestRaceDialClosesLateConnections(t *testing.T) {
+	// Atomic because the dial goroutine writes it while the test polls it.
+	var late atomic.Pointer[fakeConn]
+	f := &Fetcher{}
+	f.dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if strings.HasPrefix(addr, "[") {
+			// Connects, but only after the second address has already won.
+			time.Sleep(2 * DialStagger)
+			c := &fakeConn{addr: addr}
+			late.Store(c)
+			return c, nil
+		}
+		return &fakeConn{addr: addr}, nil
+	}
+
+	conn, err := f.raceDial(context.Background(), "tcp", addrsOf("2001:db8::1", "192.0.2.7"), "443")
+	if err != nil {
+		t.Fatalf("raceDial() error = %v", err)
+	}
+	if conn.(*fakeConn).closed.Load() {
+		t.Error("the winning connection was closed")
+	}
+
+	// drainConns runs in its own goroutine, so give it a moment to land.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if c := late.Load(); c != nil && c.closed.Load() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Error("the late connection was leaked instead of closed")
+}
+
+func TestRaceDialAllAddressesFail(t *testing.T) {
+	wantErr := errors.New("connection refused")
+	f := &Fetcher{}
+	f.dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return nil, wantErr
+	}
+
+	_, err := f.raceDial(context.Background(), "tcp", addrsOf("192.0.2.7", "192.0.2.8"), "443")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("raceDial() error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestRaceDialSingleAddress(t *testing.T) {
+	f := &Fetcher{}
+	f.dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return &fakeConn{addr: addr}, nil
+	}
+
+	conn, err := f.raceDial(context.Background(), "tcp", addrsOf("192.0.2.7"), "443")
+	if err != nil {
+		t.Fatalf("raceDial() error = %v", err)
+	}
+	if got := conn.(*fakeConn).addr; got != "192.0.2.7:443" {
+		t.Errorf("connected to %q", got)
 	}
 }

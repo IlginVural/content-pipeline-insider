@@ -51,7 +51,18 @@ func BuildRequest(
 
 	q := u.Query()
 	for _, qp := range config.QueryParameters {
-		q.Set(qp.Name, qp.Value)
+		switch qp.Source {
+		case "", HeaderStatic:
+			q.Set(qp.Name, qp.Value)
+		case HeaderSecret:
+			secret, err := resolver.Resolve(ctx, qp.SecretReference)
+			if err != nil {
+				return nil, fmt.Errorf("%w: query %s: %v", ErrSecretResolution, qp.Name, err)
+			}
+			q.Set(qp.Name, secret)
+		default:
+			return nil, fmt.Errorf("%w: %s has unknown source %q", ErrInvalidQueryParam, qp.Name, qp.Source)
+		}
 	}
 	for name, def := range config.Parameters {
 		if def.Location != LocationQuery {

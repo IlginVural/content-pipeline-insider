@@ -18,6 +18,7 @@ import (
 	"content-pipeline-insider/internal/api"
 	"content-pipeline-insider/internal/config"
 	"content-pipeline-insider/internal/logger"
+	"content-pipeline-insider/internal/store"
 )
 
 func main() {
@@ -34,7 +35,19 @@ func main() {
 	log := logger.New(cfg.LogLevel)
 	log.Info("starting renderd", "env", cfg.Env, "http_addr", cfg.HTTPAddr)
 
-	server := api.NewServer(cfg, log)
+	// Fail fast: every pipeline configuration lives in Postgres, so a process
+	// that cannot reach it has nothing to serve.
+	dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	st, err := store.New(dbCtx, cfg.DatabaseURL)
+	dbCancel()
+	if err != nil {
+		log.Error("failed to connect to the database", "error", err)
+		os.Exit(1)
+	}
+	defer st.Close()
+	log.Info("database connected")
+
+	server := api.NewServer(cfg, log, st)
 
 	// Root context is cancelled when SIGINT/SIGTERM arrives. This is how
 	// we notice "user hit Ctrl-C" or "Kubernetes is stopping the pod".
