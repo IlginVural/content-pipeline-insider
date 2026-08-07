@@ -173,6 +173,85 @@ func TestInferArrays(t *testing.T) {
 		}
 	})
 
+	t.Run("array elements are described but not selectable", func(t *testing.T) {
+		// items[].id is a projection: it evaluates to every id, and the
+		// transformation stage has no data type for a list. Offering it
+		// would let an admin save a mapping that fails at every render.
+		root, err := Infer([]any{decode(t, `{"items":[{"id":1,"tag":"a"}],"name":"Acme"}`)})
+		if err != nil {
+			t.Fatalf("Infer() = %v", err)
+		}
+
+		item := child(t, root, "items").ArrayItem
+		for _, name := range []string{"id", "tag"} {
+			if child(t, item, name).Selectable {
+				t.Errorf("items[].%s is selectable, want false", name)
+			}
+		}
+
+		// The shape is still described, so the admin can see what the
+		// array holds — it just cannot be picked.
+		if got := child(t, item, "id").JMESPath; got != "items[].id" {
+			t.Errorf("id jmesPath = %q, want items[].id", got)
+		}
+
+		leaves := Flatten(root)
+		if len(leaves) != 1 || leaves[0].JMESPath != "name" {
+			got := make([]string, 0, len(leaves))
+			for _, l := range leaves {
+				got = append(got, l.JMESPath)
+			}
+			t.Errorf("Flatten() = %v, want only [name]", got)
+		}
+	})
+
+	t.Run("an array of scalars is not selectable either", func(t *testing.T) {
+		root, err := Infer([]any{decode(t, `{"tags":["new","sale"]}`)})
+		if err != nil {
+			t.Fatalf("Infer() = %v", err)
+		}
+		if item := child(t, root, "tags").ArrayItem; item.Selectable {
+			t.Error("tags[] is selectable, want false")
+		}
+		if leaves := Flatten(root); len(leaves) != 0 {
+			t.Errorf("Flatten() = %v, want none", leaves)
+		}
+	})
+
+	t.Run("nested arrays are cleared all the way down", func(t *testing.T) {
+		root, err := Infer([]any{decode(t, `{"orders":[{"lines":[{"sku":"X1"}]}]}`)})
+		if err != nil {
+			t.Fatalf("Infer() = %v", err)
+		}
+		lines := child(t, child(t, root, "orders").ArrayItem, "lines")
+		if sku := child(t, lines.ArrayItem, "sku"); sku.Selectable {
+			t.Error("orders[].lines[].sku is selectable, want false")
+		}
+		if leaves := Flatten(root); len(leaves) != 0 {
+			t.Errorf("Flatten() = %v, want none", leaves)
+		}
+	})
+
+	t.Run("a field typed only by a later sample stays unselectable", func(t *testing.T) {
+		// merge adopts the other sample's Selectable when one side was
+		// null, which is why the flag is cleared after merging rather
+		// than before.
+		root, err := Infer([]any{
+			decode(t, `{"items":[{"id":null}]}`),
+			decode(t, `{"items":[{"id":7}]}`),
+		})
+		if err != nil {
+			t.Fatalf("Infer() = %v", err)
+		}
+		id := child(t, child(t, root, "items").ArrayItem, "id")
+		if id.Type != TypeInteger {
+			t.Errorf("id type = %s, want integer", id.Type)
+		}
+		if id.Selectable {
+			t.Error("items[].id is selectable after merging, want false")
+		}
+	})
+
 	t.Run("empty array reveals nothing about its elements", func(t *testing.T) {
 		root, err := Infer([]any{decode(t, `{"items":[]}`)})
 		if err != nil {

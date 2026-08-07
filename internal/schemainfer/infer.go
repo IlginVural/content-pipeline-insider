@@ -112,7 +112,13 @@ func inferObjectChildren(jsonPath, jmesPath string, obj map[string]any) []Schema
 }
 
 // inferArrayItem describes what an array holds by merging its elements.
-
+//
+// Everything it produces is described but not selectable. The expressions
+// below an array are projections — "reviews[].rating" evaluates to every
+// rating, not one — and the transformation stage has no data type for an
+// array, so a projection that passed selection would fail at every render.
+// Describing the shape while refusing the selection is the honest position:
+// the admin sees what the array holds and cannot pick something unusable.
 func inferArrayItem(jsonPath, jmesPath string, arr []any) *SchemaNode {
 	if len(arr) == 0 {
 		// An empty array reveals nothing about its element type. Saying
@@ -136,7 +142,24 @@ func inferArrayItem(jsonPath, jmesPath string, arr []any) *SchemaNode {
 		other := inferValue("[]", jsonPath+"[*]", jmesPath+"[]", arr[i])
 		item = merge(&item, &other)
 	}
+
+	// After merging, not before: merge adopts the other sample's Selectable
+	// when one side was null, so clearing the flag earlier would let it come
+	// back for exactly the fields that took two samples to type.
+	clearSelectable(&item)
 	return &item
+}
+
+// clearSelectable marks a subtree describable but not pickable.
+func clearSelectable(node *SchemaNode) {
+	if node == nil {
+		return
+	}
+	node.Selectable = false
+	for i := range node.Children {
+		clearSelectable(&node.Children[i])
+	}
+	clearSelectable(node.ArrayItem)
 }
 
 // joinJMES appends a key to a JMESPath expression, quoting the key when

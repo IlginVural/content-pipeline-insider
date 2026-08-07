@@ -26,9 +26,11 @@ func ValidateAgainstSchema(tree *schemainfer.SchemaNode, set []FieldMapping) err
 	for _, m := range set {
 		discovered, ok := selectable[m.SourcePath]
 		if !ok {
-			// Either the path was never in the response, or it names a
-			// container. Containers are non-selectable on purpose: copying a
-			// whole subtree would drag unselected fields along with it.
+			// The path was never in the response, or it names something
+			// deliberately non-selectable: a container, because copying a
+			// whole subtree would drag unselected fields along with it, or a
+			// field below an array, because "reviews[].rating" is a
+			// projection and Apply has no data type for the list it returns.
 			return fmt.Errorf("%w: %q wants %s", ErrUnknownSourcePath, m.OutputName, m.SourcePath)
 		}
 
